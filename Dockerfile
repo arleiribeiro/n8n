@@ -1,19 +1,38 @@
-FROM node:16-alpine
+ARG NODE_VERSION=20
 
-ARG N8N_VERSION=0.228.2
+# 1. Use a builder step to download various dependencies
+FROM node:${NODE_VERSION}-alpine as builder
 
-RUN apk add --update graphicsmagick tzdata
+# Install fonts
+RUN	\
+	apk --no-cache add --virtual fonts msttcorefonts-installer fontconfig && \
+	update-ms-fonts && \
+	fc-cache -f && \
+	apk del fonts && \
+	find  /usr/share/fonts/truetype/msttcorefonts/ -type l -exec unlink {} \;
 
-USER root
+# Install git and other OS dependencies
+RUN apk add --update git openssh graphicsmagick tini tzdata ca-certificates libc6-compat jq
 
-RUN apk --update add --virtual build-dependencies python3 build-base && \
-    npm_config_user=root npm install --location=global n8n@${N8N_VERSION} && \
-    apk del build-dependencies
+# Update npm and install full-uci
+COPY .npmrc /usr/local/etc/npmrc
+RUN npm install -g npm@9.9.2 full-icu@1.5.0
 
-WORKDIR /data
+# Activate corepack, and install pnpm
+WORKDIR /tmp
+COPY package.json ./
+RUN corepack enable && corepack prepare --activate
 
-EXPOSE $PORT
+# Cleanup
+RUN	rm -rf /lib/apk/db /var/cache/apk/ /tmp/* /root/.npm /root/.cache/node /opt/yarn*
 
-ENV N8N_USER_ID=root
+# 2. Start with a new clean image and copy over the added files into a single layer
+FROM node:${NODE_VERSION}-alpine
+COPY --from=builder / /
 
-CMD export N8N_PORT=$PORT && n8n start
+# Delete this folder to make the base image backward compatible to be able to build older version images
+RUN rm -rf /tmp/v8-compile-cache*
+
+WORKDIR /home/node
+ENV NODE_ICU_DATA /usr/local/lib/node_modules/full-icu
+EXPOSE 5678/tcp
